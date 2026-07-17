@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+"""Entry point shim so the tool runs straight from a clone: ./7dtd-watch status"""
+
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+from sevendtd_watch.__main__ import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())
