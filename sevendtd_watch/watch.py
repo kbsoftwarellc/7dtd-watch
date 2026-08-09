@@ -7,6 +7,7 @@ doesn't replay a backlog of alerts for things that already happened.
 from __future__ import annotations
 
 import time
+from typing import Callable
 
 from . import gamestate, notify
 from .a2s import Snapshot
@@ -72,15 +73,39 @@ def _diff(server: Server, snap: Snapshot, prev: dict) -> tuple[list[Event], dict
     recovered = was_online is False
     prev_players = None if recovered else prev.get("players")
     if prev_players is not None and snap.players != prev_players:
-        kind = "join" if snap.players > prev_players else "leave"
-        verb = "joined" if kind == "join" else "left"
-        delta = abs(snap.players - prev_players)
-        detail = f"{prev_players} \N{RIGHTWARDS ARROW} {snap.players}/{snap.max_players} players"
-        if gs.known:
-            detail += f" \N{MIDDLE DOT} Day {gs.day}, {gs.clock}"
-        events.append(
-            Event(kind, label, f"{delta} player{'s' if delta != 1 else ''} {verb}", detail)
-        )
+        count = f"{prev_players} \N{RIGHTWARDS ARROW} {snap.players}/{snap.max_players} players"
+        when = f" \N{MIDDLE DOT} Day {gs.day}, {gs.clock}" if gs.known else ""
+
+        # A change that crosses zero is reported as a clock event *instead of* a
+        # join/leave, not as well as. Crossing zero is the strictly bigger news — it is
+        # the moment the world clock starts or stops — and firing both would put two
+        # toasts on screen for one thing.
+        if prev_players == 0:
+            events.append(
+                Event(
+                    "clock_start",
+                    label,
+                    "Someone is on \N{EM DASH} clock running",
+                    f"{count}{when}. {gamestate.blood_moon_line(gs)}" if gs.known else count,
+                )
+            )
+        elif snap.players == 0:
+            frozen_at = f" \N{MIDDLE DOT} frozen at Day {gs.day}, {gs.clock}" if gs.known else ""
+            events.append(
+                Event(
+                    "clock_stop",
+                    label,
+                    "Server empty \N{EM DASH} clock paused",
+                    f"{count}{frozen_at}",
+                )
+            )
+        else:
+            kind = "join" if snap.players > prev_players else "leave"
+            verb = "joined" if kind == "join" else "left"
+            delta = abs(snap.players - prev_players)
+            events.append(
+                Event(kind, label, f"{delta} player{'s' if delta != 1 else ''} {verb}", count + when)
+            )
     state["players"] = snap.players
 
     if gs.known:
@@ -120,8 +145,22 @@ def _diff(server: Server, snap: Snapshot, prev: dict) -> tuple[list[Event], dict
     return events, state
 
 
-def tick(cfg: Config, state: dict, dry_run: bool = False, quiet: bool = False) -> tuple[list[Event], dict]:
-    """One poll of every server. Returns the events emitted and the updated state."""
+def tick(
+    cfg: Config,
+    state: dict,
+    dry_run: bool = False,
+    quiet: bool = False,
+    on_event: Callable[[Event, list[str]], None] | None = None,
+) -> tuple[list[Event], dict, dict[str, Snapshot]]:
+    """One poll of every server.
+
+    Returns the events emitted, the updated state, and the raw snapshots — the tray
+    needs the snapshots to draw its icon and tooltip, and running its own poll loop
+    beside this one would double the traffic and split the measured clock rate.
+
+    `on_event` is called with each dispatched event and the sinks that accepted it, so
+    a caller can add a sink of its own (or notice that none of them worked).
+    """
     snaps = poll_all(cfg, state)
     emitted: list[Event] = []
 
@@ -135,13 +174,15 @@ def tick(cfg: Config, state: dict, dry_run: bool = False, quiet: bool = False) -
         for ev in events:
             if ev.kind not in cfg.events:
                 continue
-            notify.dispatch(ev, cfg, dry_run=dry_run)
+            sinks = notify.dispatch(ev, cfg, dry_run=dry_run)
             emitted.append(ev)
+            if on_event is not None:
+                on_event(ev, sinks)
             if not quiet and not dry_run:
                 stamp = time.strftime("%H:%M:%S")
                 print(f"[{stamp}] {ev.server}: {ev.title} — {ev.body}".rstrip(" —"))
 
-    return emitted, state
+    return emitted, state, snaps
 
 
 def run(cfg: Config, interval: int, once: bool = False, dry_run: bool = False) -> int:
@@ -152,7 +193,7 @@ def run(cfg: Config, interval: int, once: bool = False, dry_run: bool = False) -
     state = load_state()
 
     if once:
-        events, state = tick(cfg, state, dry_run=dry_run)
+        events, state, _ = tick(cfg, state, dry_run=dry_run)
         save_state(state)
         if dry_run and not events:
             print("[dry-run] no changes since last poll")
@@ -171,7 +212,7 @@ def run(cfg: Config, interval: int, once: bool = False, dry_run: bool = False) -
     try:
         while True:
             try:
-                _, state = tick(cfg, state, dry_run=dry_run)
+                _, state, _ = tick(cfg, state, dry_run=dry_run)
                 save_state(state)
             except OSError as exc:
                 # Network dropped out from under us — don't kill the watcher.

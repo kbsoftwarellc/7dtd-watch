@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from . import __version__, a2s, clock, config, dash, notify, render, watch
+from . import __version__, a2s, clock, config, dash, notify, render, tray, watch
 from .config import Config, Server
 
 
@@ -57,6 +57,15 @@ def cmd_watch(cfg: Config, args) -> int:
         max(config.MIN_POLL_INTERVAL, args.interval or cfg.poll_interval),
         once=args.once,
         dry_run=args.dry_run,
+    )
+
+
+def cmd_tray(cfg: Config, args) -> int:
+    autostart = True if args.install_autostart else (False if args.remove_autostart else None)
+    return tray.run(
+        cfg,
+        max(config.MIN_POLL_INTERVAL, args.interval or cfg.poll_interval),
+        install_autostart=autostart,
     )
 
 
@@ -183,6 +192,12 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--once", action="store_true", help="poll once and exit (for cron)")
     w.add_argument("--dry-run", action="store_true", help="print events instead of sending them")
     w.set_defaults(func=cmd_watch)
+
+    tr = sub.add_parser("tray", help="system-tray icon with hover details and alerts")
+    tr.add_argument("--interval", type=int, help=f"seconds between polls (min {config.MIN_POLL_INTERVAL})")
+    tr.add_argument("--install-autostart", action="store_true", help="start the tray at login, then exit")
+    tr.add_argument("--remove-autostart", action="store_true", help="undo --install-autostart, then exit")
+    tr.set_defaults(func=cmd_tray)
 
     sv = sub.add_parser("servers", help="list / add / remove / import servers")
     sv.add_argument("action", nargs="?", choices=["list", "add", "remove", "import"], default="list")

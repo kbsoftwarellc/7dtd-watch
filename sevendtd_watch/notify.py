@@ -10,9 +10,10 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .config import Config
 
@@ -27,6 +28,10 @@ ICONS = {
     "blood_moon": "\N{LARGE RED CIRCLE}",
     "day_rollover": "\N{BLACK SUN WITH RAYS}",
     "server_reset": "\N{ANTICLOCKWISE OPEN CIRCLE ARROW}",
+    "clock_start": "\N{BLACK RIGHT-POINTING TRIANGLE}",
+    "clock_stop": "\N{DOUBLE VERTICAL BAR}",
+    # Not a poll event — the tray raises it by hand when the screen unlocks.
+    "away": "\N{BELL}",
 }
 
 COLORS = {
@@ -37,6 +42,9 @@ COLORS = {
     "blood_moon": 0xE01E1E,
     "day_rollover": 0xFAA61A,
     "server_reset": 0x7289DA,
+    "clock_start": 0x43B581,
+    "clock_stop": 0x747F8D,
+    "away": 0xF0A53C,
 }
 
 
@@ -46,10 +54,30 @@ class Event:
     server: str  # display name
     title: str
     body: str
+    # Wall-clock time the event was raised. The tray reports events as "22m ago", and
+    # after a restart it reads them back from disk, so the time has to travel with them.
+    at: float = field(default_factory=time.time)
 
     @property
     def urgent(self) -> bool:
         return self.kind in URGENT
+
+    @property
+    def icon(self) -> str:
+        return ICONS.get(self.kind, "")
+
+    def to_dict(self) -> dict:
+        return {"kind": self.kind, "server": self.server, "title": self.title, "body": self.body, "at": self.at}
+
+    @classmethod
+    def from_dict(cls, raw: dict) -> "Event":
+        return cls(
+            kind=str(raw.get("kind", "")),
+            server=str(raw.get("server", "")),
+            title=str(raw.get("title", "")),
+            body=str(raw.get("body", "")),
+            at=float(raw.get("at", 0.0)),
+        )
 
 
 def _notify_send(ev: Event) -> bool:

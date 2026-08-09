@@ -30,6 +30,10 @@ mods on the server. It works on any server you can see in the browser.
 
 Python 3.10+. **No dependencies** — standard library only. No venv, no pip.
 
+The optional `tray` command is the one exception: it needs PyQt6
+(`sudo dnf install python3-pyqt6` / `sudo apt install python3-pyqt6`). Everything
+else works without it, and the tray tells you what to install if it's missing.
+
 ## Usage
 
 ```bash
@@ -44,6 +48,10 @@ Python 3.10+. **No dependencies** — standard library only. No venv, no pip.
 ./7dtd-watch watch                # background loop, notifies you when things change
 ./7dtd-watch watch --once         # single poll, for cron
 ./7dtd-watch watch --dry-run      # print events instead of sending them
+
+./7dtd-watch tray                 # tray icon: hover for detail, click for the window
+./7dtd-watch tray --install-autostart   # ...and start it at login
+./7dtd-watch tray --remove-autostart
 
 ./7dtd-watch servers list
 ./7dtd-watch servers add 203.0.113.10:26900 --name "My Server"
@@ -68,14 +76,20 @@ run `servers import`, and it shows up here. No IP typing.
 
 | event | when |
 |---|---|
-| `join` / `leave` | player count changed |
+| `clock_start` | the server went from empty to occupied — **the world clock is running again** |
+| `clock_stop` | the last player left — **the world clock is frozen** |
+| `join` / `leave` | player count changed, without crossing zero |
 | `down` / `up` | server stopped/started answering (after 2 consecutive misses, so one dropped UDP packet doesn't cry wolf) |
 | `blood_moon` | 2 game-hours before the horde spawns, and again when it does |
 | `day_rollover` | a new in-game day started |
 | `server_reset` | the map or version changed — a wipe or an update |
 
-Sinks are **desktop toasts** (`notify-send`) and a **Discord webhook**. Both are
-optional and fail soft. Set the webhook in the config, or via
+A change that crosses zero is reported as `clock_start`/`clock_stop` *instead of* a
+`join`/`leave`, never as both — crossing zero is the bigger news, and one thing
+happening should not put two toasts on screen.
+
+Sinks are **desktop toasts** (`notify-send`), a **Discord webhook**, and the tray.
+All are optional and fail soft. Set the webhook in the config, or via
 `$SEVENDTD_DISCORD_WEBHOOK` so it never has to be committed anywhere.
 
 State lives in `~/.config/7dtd-watch/state.json`, so restarting the watcher doesn't
@@ -91,6 +105,79 @@ systemd-run --user --unit=7dtd-watch ~/Documents/7dtd-watch/7dtd-watch watch
 */5 * * * * ~/Documents/7dtd-watch/7dtd-watch watch --once
 ```
 
+## The tray
+
+```bash
+./7dtd-watch tray
+```
+
+`status` is a command you have to run, `dash` is a window you have to leave open, and
+`watch` only speaks when something changes — so if you're away from the desk, the toast
+it fired is gone before you get back. The tray is the piece that is always there.
+
+**The icon is the answer.** It carries the number of players online across every server,
+so "is anybody on?" is answered without hovering, clicking, or remembering to check.
+
+| icon | meaning |
+|---|---|
+| green **`3`** | 3 players on. The world clock is running. |
+| grey **`⏸`** | reachable, but empty — **the world clock is frozen**, nothing is progressing |
+| red **`4`** | blood moon horde is out, right now, with players on |
+| red **`!`** | no server is answering |
+| amber dot | events have happened that you haven't looked at yet |
+
+**Hover for the short version.** A panel tooltip is a narrow column, so it gets the
+short form: player count, day and clock, whether that clock is moving, horde ETA. Every
+line is written — and hard-clipped — to fit without wrapping.
+
+```
+7dtd-watch · 3 players online
+
+⚠ 2 new since you looked
+   ☀ My Community Server · Day 387 (5m)
+   ▶ My Community Server · clock running (1m)
+
+▶ My Community Server   3/12
+   Day 16 · 22:39 🌙 · running
+   horde ~4h 37m real · day 20
+
+⏸ Friends' Server   0/12
+   Day 23 · 17:42 ☀ · PAUSED
+   horde ~5h 11m real · day 28
+
+updated 7s ago · click for detail
+```
+
+**Click for the long version.** Left-click opens a details window with room to breathe:
+a card per server with player count, game day, clock and world-clock state as labelled
+stats, the full horde line, session lengths, map/version/ping/flags, and the recent
+event log underneath. It refreshes itself while open, and sizes to its content the first
+time so there's no dead space.
+
+**A badge for what you missed.** Every event is kept in
+`~/.config/7dtd-watch/events.jsonl`, and the icon wears a numbered amber dot until you
+look. Walk away, come back to a green **`2`** with a dot on it, and you know somebody
+logged on and the clock is moving again — whether or not you saw the toast, and even if
+the tray was restarted or the machine rebooted in between. Hovering lists what they
+were; opening the menu or the window clears the badge.
+
+**Screen-lock aware.** If the session locks and things happen, unlocking gets one
+summary notification — *"While you were away (37m): My Community Server: ▶ Someone is
+on — clock running"* — instead of nothing. This rides KDE/GNOME's
+`org.freedesktop.ScreenSaver` signal; where that isn't available the badge still does
+the job on its own.
+
+Right-click for the menu: the details window, per-server detail, recent events, refresh
+now, open the `dash` in a terminal, per-event alert toggles, and start-at-login.
+Everything toggled there is written straight back to the config file.
+
+Autostart writes `~/.config/autostart/7dtd-watch-tray.desktop`, either from the menu or
+with `./7dtd-watch tray --install-autostart`.
+
+Run the tray *or* `watch`, not both — they share `state.json` and would fight over it.
+The tray runs the same poll loop, so it costs no extra traffic and gives the same
+alerts. A lock file at `~/.config/7dtd-watch/tray.lock` stops two trays starting.
+
 ## Config
 
 `~/.config/7dtd-watch/config.json` is written on first run with an **empty** server
@@ -104,9 +191,16 @@ The shape:
     {"name": "My Community Server", "host": "203.0.113.10", "port": 26900}
   ],
   "notify": {"desktop": true, "discord_webhook": ""},
-  "events": ["join", "leave", "down", "up", "blood_moon", "day_rollover", "server_reset"]
+  "events": ["join", "leave", "down", "up", "blood_moon", "day_rollover",
+             "server_reset", "clock_start", "clock_stop"],
+  "tray": {"badge_unseen": true, "summary_on_return": true, "history": 100}
 }
 ```
+
+A config written by an older version is missing the event kinds added since, which
+would silently mute those alerts. `version` tracks that: loading an old config enables
+the new kinds once and writes the file back. Removing a kind by hand after that sticks —
+the migration only runs on the older version.
 
 Poll interval floors at 5s. Each poll is three small UDP round-trips per server —
 about what the in-game browser does while it's open. These are public status queries.
@@ -183,7 +277,12 @@ Worth writing down, because two of these are traps:
 python3 -m sevendtd_watch.gamestate --selftest   # clock, horde countdown, blood-moon math
 python3 tests/test_clock.py                      # tick-rate measurement (mostly: what it rejects)
 python3 tests/test_events.py                     # notification event logic
+python3 tests/test_tray.py                       # tray icon state, tooltip, away summary, migration
 ```
+
+`test_tray.py` needs no Qt and no display — `tray.py` keeps every decision (what the
+icon should say, what fits in a tooltip, what you missed) out of the Qt layer
+precisely so it can be tested.
 
 The clock assertions are pinned to values measured off live servers, so if the tick
 math ever drifts, the selftest fails rather than the dashboard lying.
